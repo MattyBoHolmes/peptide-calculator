@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Peptide Calculator</title>
+<style>
+  body {
+    font-family: -apple-system, system-ui, sans-serif;
+    background: #f4f5f7;
+    color: #1d1d1f;
+    max-width: 420px;
+    margin: 40px auto;
+    padding: 0 16px;
+  }
+  h1 { font-size: 1.4rem; margin-bottom: 20px; }
+  .card { background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  label { display: block; font-size: 0.85rem; font-weight: 600; margin: 14px 0 6px; }
+  input {
+    width: 100%; box-sizing: border-box; font-size: 1rem;
+    padding: 10px; border: 1px solid #ccc; border-radius: 8px;
+  }
+  .row { display: flex; gap: 8px; }
+  .row input { flex: 1; }
+  .toggle { display: flex; border: 1px solid #ccc; border-radius: 8px; overflow: hidden; }
+  .toggle button {
+    flex: 1; border: none; background: #fff; padding: 8px 14px; font-size: 0.95rem; cursor: pointer;
+  }
+  .toggle button.active { background: #1d1d1f; color: #fff; }
+  .solve-for { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .solve-for span { font-size: 0.85rem; font-weight: 600; white-space: nowrap; }
+  .solve-for .toggle { flex: 1; }
+  .result { text-align: center; margin-top: 24px; }
+  .answer { font-size: 2.6rem; font-weight: 700; }
+  .sub { color: #666; font-size: 0.9rem; margin-top: 4px; }
+  .warning { color: #b00020; font-weight: 600; margin-top: 8px; }
+  .label-box { margin-top: 20px; border-top: 1px solid #eee; padding-top: 16px; }
+  pre {
+    background: #f4f5f7; border-radius: 8px; padding: 12px; margin: 0 0 10px;
+    font-family: inherit; font-size: 1rem; user-select: all; white-space: pre-wrap;
+  }
+  .copy-btn {
+    width: 100%; padding: 10px; font-size: 1rem; border: none; border-radius: 8px;
+    background: #0a7cff; color: #fff; cursor: pointer;
+  }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+  <h1>Peptide Calculator</h1>
+
+  <div class="card">
+    <div class="solve-for">
+      <span>Solve for:</span>
+      <div class="toggle">
+        <button id="mode-units" class="active" type="button">Units</button>
+        <button id="mode-water" type="button">Water</button>
+      </div>
+    </div>
+
+    <label for="name">Peptide name (optional)</label>
+    <input id="name" type="text" placeholder="e.g. Tesamorelin">
+
+    <label for="vial">Peptide in vial (mg)</label>
+    <input id="vial" type="number" min="0" step="any" placeholder="e.g. 10">
+
+    <div id="water-field">
+      <label for="water">Bacteriostatic water added (mL)</label>
+      <input id="water" type="number" min="0" step="any" placeholder="e.g. 2">
+    </div>
+
+    <div id="units-field" class="hidden">
+      <label for="target-units">Units you want to inject (100-unit syringe)</label>
+      <input id="target-units" type="number" min="0" step="any" placeholder="e.g. 20">
+    </div>
+
+    <label for="dose">Dose per injection</label>
+    <div class="row">
+      <input id="dose" type="number" min="0" step="any" placeholder="e.g. 1">
+      <div class="toggle">
+        <button id="btn-mg" class="active" type="button">mg</button>
+        <button id="btn-mcg" type="button">mcg</button>
+      </div>
+    </div>
+
+    <div class="result">
+      <div class="answer" id="answer">–</div>
+      <div class="sub" id="detail">Enter all three values</div>
+      <div class="warning hidden" id="warn-syringe">Dose is more than one full 100-unit syringe</div>
+      <div class="warning hidden" id="warn-vial">Dose is more than the whole vial contains</div>
+    </div>
+
+    <div class="label-box hidden" id="label-box">
+      <pre id="label-text"></pre>
+      <button class="copy-btn" id="copy-btn" type="button">Copy label</button>
+    </div>
+  </div>
+
+<script>
+  // ---- The math (kept separate from the page so it's easy to check) ----
+  function toMg(dose, doseUnit) {
+    return doseUnit === "mcg" ? dose / 1000 : dose;
+  }
+
+  // Known: vial, water, dose  ->  units to draw
+  function calculateUnits(vialMg, waterMl, dose, doseUnit) {
+    if (!(vialMg > 0) || !(waterMl > 0) || !(dose > 0)) return null;
+    const concentration = vialMg / waterMl;                        // mg per mL
+    const volumeMl = toMg(dose, doseUnit) / concentration;         // mL to draw
+    const units = Math.round(volumeMl * 100 * 10) / 10;            // 100 units = 1 mL, 1 decimal
+    return { concentration, units };
+  }
+
+  // Known: vial, desired units, dose  ->  water to add
+  function calculateWater(vialMg, units, dose, doseUnit) {
+    if (!(vialMg > 0) || !(units > 0) || !(dose > 0)) return null;
+    const volumeMl = units / 100;                                  // mL per injection
+    const concentration = toMg(dose, doseUnit) / volumeMl;         // mg per mL needed
+    const waterMl = Math.round((vialMg / concentration) * 100) / 100; // 2 decimals
+    return { concentration, waterMl };
+  }
+
+  // Drops trailing zeros: 20.0 -> "20", 2.50 -> "2.5"
+  function fmt(n) {
+    return String(parseFloat(n.toFixed(2)));
+  }
+
+  // ---- Wiring the page to the math ----
+  let mode = "units";
+  let doseUnit = "mg";
+  const $ = (id) => document.getElementById(id);
+  const num = (id) => parseFloat($(id).value);
+
+  function update() {
+    const name = $("name").value.trim();
+    const vial = num("vial");
+    const dose = num("dose");
+    let water, units, concentration;
+
+    if (mode === "units") {
+      water = num("water");
+      const r = calculateUnits(vial, water, dose, doseUnit);
+      if (r) { units = r.units; concentration = r.concentration; }
+    } else {
+      units = num("target-units");
+      const r = calculateWater(vial, units, dose, doseUnit);
+      if (r) { water = r.waterMl; concentration = r.concentration; }
+    }
+
+    if (concentration === undefined) {
+      $("answer").textContent = "–";
+      $("detail").textContent = "Enter all three values";
+      $("warn-syringe").classList.add("hidden");
+      $("warn-vial").classList.add("hidden");
+      $("label-box").classList.add("hidden");
+      return;
+    }
+
+    $("answer").textContent = mode === "units"
+      ? fmt(units) + " units"
+      : "Add " + fmt(water) + " mL";
+    $("detail").textContent = "Concentration: " + fmt(concentration) + " mg/mL";
+    $("warn-syringe").classList.toggle("hidden", units <= 100);
+    $("warn-vial").classList.toggle("hidden", toMg(dose, doseUnit) <= vial);
+
+    const firstLine = (name ? name + " " : "") + fmt(vial) + "mg/" + fmt(water) + "ml";
+    const secondLine = fmt(units) + " units = " + fmt(dose) + doseUnit;
+    $("label-text").textContent = firstLine + "\n" + secondLine;
+    $("label-box").classList.remove("hidden");
+  }
+
+  function setMode(m) {
+    mode = m;
+    $("mode-units").classList.toggle("active", m === "units");
+    $("mode-water").classList.toggle("active", m === "water");
+    $("water-field").classList.toggle("hidden", m === "water");
+    $("units-field").classList.toggle("hidden", m === "units");
+    update();
+  }
+
+  function setUnit(unit) {
+    doseUnit = unit;
+    $("btn-mg").classList.toggle("active", unit === "mg");
+    $("btn-mcg").classList.toggle("active", unit === "mcg");
+    update();
+  }
+
+  $("mode-units").addEventListener("click", () => setMode("units"));
+  $("mode-water").addEventListener("click", () => setMode("water"));
+  $("btn-mg").addEventListener("click", () => setUnit("mg"));
+  $("btn-mcg").addEventListener("click", () => setUnit("mcg"));
+  ["name", "vial", "water", "target-units", "dose"].forEach((id) => $(id).addEventListener("input", update));
+
+  $("copy-btn").addEventListener("click", async () => {
+    const text = $("label-text").textContent;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (e) {
+      // Fallback for browsers that block clipboard access on local files
+      const tmp = document.createElement("textarea");
+      tmp.value = text;
+      document.body.appendChild(tmp);
+      tmp.select();
+      document.execCommand("copy");
+      tmp.remove();
+    }
+    $("copy-btn").textContent = "Copied!";
+    setTimeout(() => ($("copy-btn").textContent = "Copy label"), 1500);
+  });
+</script>
+</body>
+</html>
